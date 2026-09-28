@@ -2227,3 +2227,2298 @@ recovery
 > **A distributed transaction is a logical business transaction whose operations span multiple independent transactional resources and therefore requires coordination, failure handling, and consistency mechanisms to achieve the required business guarantees.**
 
 ---
+
+# Saga Pattern — Choreography
+
+When a distributed transaction spans multiple microservices, maintaining one traditional database transaction across all services can be difficult.
+
+The **Saga Pattern** solves this by breaking one large distributed transaction into a sequence of **local transactions**.
+
+Each service:
+
+1. Performs its own local transaction.
+2. Publishes an event after the local transaction succeeds.
+3. Another service consumes that event.
+4. Performs its own local transaction.
+5. Publishes the next event.
+
+In **Saga Choreography**, there is no central component coordinating every step.
+
+Instead:
+
+> **Services communicate with each other through events, and each service reacts to events and decides what action it needs to perform next.**
+
+---
+
+# 1. What Is Saga?
+
+Suppose we have an e-commerce system:
+
+```text
+Order Service
+Inventory Service
+Payment Service
+Shipping Service
+```
+
+Placing an order requires:
+
+```text
+Create Order
+    ↓
+Reserve Inventory
+    ↓
+Process Payment
+    ↓
+Create Shipment
+```
+
+Instead of trying to make these operations one giant database transaction:
+
+```text
+BEGIN
+   |
+Order
+   |
+Inventory
+   |
+Payment
+   |
+Shipping
+   |
+COMMIT
+```
+
+we divide the operation into local transactions:
+
+```text
+Order Local Transaction
+        ↓
+Inventory Local Transaction
+        ↓
+Payment Local Transaction
+        ↓
+Shipping Local Transaction
+```
+
+Each local transaction commits independently.
+
+The complete business operation is called a **Saga**.
+
+---
+
+# 2. Saga as a Sequence of Local Transactions
+
+A Saga can be represented as:
+
+```text
+Saga T1
+
+T1 → T2 → T3 → T4
+```
+
+For example:
+
+```text
+T1 = Create Order
+T2 = Reserve Inventory
+T3 = Process Payment
+T4 = Create Shipment
+```
+
+Each transaction belongs to a different service.
+
+```text
+T1
+ |
+Order Service
+ |
+Order DB
+```
+
+```text
+T2
+ |
+Inventory Service
+ |
+Inventory DB
+```
+
+```text
+T3
+ |
+Payment Service
+ |
+Payment DB
+```
+
+```text
+T4
+ |
+Shipping Service
+ |
+Shipping DB
+```
+
+There is no single database transaction spanning all of them.
+
+---
+
+# 3. What Is Saga Choreography?
+
+In **choreography**, each service listens for events and decides what to do based on those events.
+
+For example:
+
+```text
+Order Service
+     |
+     | OrderCreated
+     v
+ Message Broker
+     |
+     v
+Inventory Service
+     |
+     | InventoryReserved
+     v
+ Message Broker
+     |
+     v
+Payment Service
+     |
+     | PaymentCompleted
+     v
+ Message Broker
+     |
+     v
+Shipping Service
+```
+
+The services effectively coordinate themselves through events.
+
+There is no central component saying:
+
+```text
+Do this
+Now do this
+Now do this
+```
+
+Instead:
+
+```text
+Event
+  ↓
+Service reacts
+  ↓
+Local transaction
+  ↓
+New event
+  ↓
+Next service reacts
+```
+
+---
+
+# 4. Basic Choreography Flow
+
+Consider:
+
+```text
+User places order
+```
+
+The flow might be:
+
+```text
+Order Service
+     |
+     | Create Order
+     v
+Order DB
+     |
+     | OrderCreated
+     v
+Message Broker
+     |
+     v
+Inventory Service
+     |
+     | Reserve Inventory
+     v
+Inventory DB
+     |
+     | InventoryReserved
+     v
+Message Broker
+     |
+     v
+Payment Service
+     |
+     | Charge Customer
+     v
+Payment DB
+     |
+     | PaymentCompleted
+     v
+Message Broker
+     |
+     v
+Shipping Service
+```
+
+Each service is responsible for its own step.
+
+---
+
+# 5. Why Is It Called Choreography?
+
+Think about a dance.
+
+There isn't necessarily one person standing in the middle telling every dancer exactly what to do.
+
+Instead:
+
+```text
+Dancer A
+   ↓
+performs action
+
+Dancer B sees/reacts
+   ↓
+performs action
+
+Dancer C sees/reacts
+   ↓
+performs action
+```
+
+Similarly, in Saga Choreography:
+
+```text
+Service A
+   ↓ event
+Service B
+   ↓ event
+Service C
+   ↓ event
+Service D
+```
+
+Each service reacts to events.
+
+---
+
+# 6. No Central Coordinator
+
+The defining characteristic is:
+
+```text
+No central transaction coordinator
+```
+
+Instead:
+
+```text
+          Message Broker
+        /       |       \
+       /        |        \
+      v         v         v
+   Order    Inventory   Payment
+```
+
+Services communicate through events.
+
+For example:
+
+```text
+OrderCreated
+InventoryReserved
+PaymentCompleted
+ShipmentCreated
+```
+
+Each service knows:
+
+> "When I receive this event, what local operation should I perform?"
+
+---
+
+# 7. Example: Complete Order Saga
+
+Let's build a complete example.
+
+The user clicks:
+
+```text
+Place Order
+```
+
+The Order Service performs:
+
+```sql
+BEGIN;
+
+INSERT INTO orders (...);
+
+COMMIT;
+```
+
+After successfully committing:
+
+```text
+OrderCreated
+```
+
+is published.
+
+Then:
+
+```text
+OrderCreated
+      ↓
+Inventory Service
+```
+
+Inventory Service performs:
+
+```sql
+BEGIN;
+
+UPDATE inventory
+SET quantity = quantity - 1
+WHERE product_id = 101
+AND quantity > 0;
+
+COMMIT;
+```
+
+Then publishes:
+
+```text
+InventoryReserved
+```
+
+Next:
+
+```text
+InventoryReserved
+      ↓
+Payment Service
+```
+
+Payment Service processes the payment.
+
+If successful:
+
+```text
+PaymentCompleted
+```
+
+is published.
+
+Then:
+
+```text
+PaymentCompleted
+      ↓
+Shipping Service
+```
+
+Shipping Service creates the shipment.
+
+Finally:
+
+```text
+ShipmentCreated
+```
+
+is published.
+
+The entire Saga has completed.
+
+---
+
+# 8. Important Point: Each Service Owns Its Transaction
+
+Consider:
+
+```text
+Order Service
+```
+
+It controls:
+
+```text
+Order DB
+```
+
+Inventory Service controls:
+
+```text
+Inventory DB
+```
+
+Payment Service controls:
+
+```text
+Payment DB
+```
+
+Each service executes its own local transaction.
+
+```text
+Order Service
+   |
+   +---- BEGIN
+   +---- INSERT Order
+   +---- COMMIT
+
+
+Inventory Service
+   |
+   +---- BEGIN
+   +---- UPDATE Inventory
+   +---- COMMIT
+
+
+Payment Service
+   |
+   +---- BEGIN
+   +---- INSERT Payment
+   +---- COMMIT
+```
+
+There is no global database transaction.
+
+---
+
+# 9. Events Drive the Saga
+
+The most important concept in choreography is:
+
+> **An event produced by one service becomes the trigger for another service.**
+
+For example:
+
+```text
+OrderCreated
+      ↓
+Inventory Service
+```
+
+Then:
+
+```text
+InventoryReserved
+      ↓
+Payment Service
+```
+
+Then:
+
+```text
+PaymentCompleted
+      ↓
+Shipping Service
+```
+
+So the chain becomes:
+
+```text
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+PaymentCompleted
+      ↓
+ShipmentCreated
+```
+
+---
+
+# 10. Events vs Commands
+
+This distinction is important.
+
+An event describes:
+
+> Something already happened.
+
+For example:
+
+```text
+OrderCreated
+```
+
+means:
+
+```text
+The order has been created.
+```
+
+A command generally means:
+
+> Please perform this action.
+
+For example:
+
+```text
+ReserveInventory
+```
+
+means:
+
+```text
+Please reserve inventory.
+```
+
+In choreography, event-driven communication is commonly used to trigger the next local transaction.
+
+---
+
+# 11. Event Example
+
+An event might look like:
+
+```json
+{
+  "eventId": "evt_123",
+  "eventType": "OrderCreated",
+  "transactionId": "txn_456",
+  "orderId": "order_789",
+  "userId": "user_101",
+  "items": [
+    {
+      "productId": "product_1",
+      "quantity": 1
+    }
+  ],
+  "timestamp": "2026-09-29T10:00:00Z"
+}
+```
+
+The important fields can include:
+
+```text
+eventId
+eventType
+transactionId
+entityId
+timestamp
+payload
+```
+
+---
+
+# 12. Transaction ID Across the Saga
+
+A distributed Saga should generally have a way to identify the overall business transaction.
+
+For example:
+
+```text
+transactionId = TXN123
+```
+
+Then:
+
+```text
+OrderCreated
+transactionId = TXN123
+```
+
+Inventory event:
+
+```text
+InventoryReserved
+transactionId = TXN123
+```
+
+Payment event:
+
+```text
+PaymentCompleted
+transactionId = TXN123
+```
+
+This makes it possible to correlate the complete workflow.
+
+```text
+TXN123
+ |
+ +--> OrderCreated
+ |
+ +--> InventoryReserved
+ |
+ +--> PaymentCompleted
+ |
+ +--> ShipmentCreated
+```
+
+---
+
+# 13. What Happens If Inventory Fails?
+
+Suppose:
+
+```text
+OrderCreated
+      ↓
+Inventory Service
+      ↓
+Reservation FAILED
+```
+
+The Inventory Service may publish:
+
+```text
+InventoryReservationFailed
+```
+
+Now another service can react to that event.
+
+For example:
+
+```text
+InventoryReservationFailed
+          ↓
+Order Service
+          ↓
+Cancel Order
+```
+
+The order might move from:
+
+```text
+PENDING
+```
+
+to:
+
+```text
+CANCELLED
+```
+
+This is where **compensating transactions** become important.
+
+---
+
+# 14. Compensation in Choreography
+
+Suppose:
+
+```text
+OrderCreated
+     ↓
+InventoryReserved
+     ↓
+PaymentFailed
+```
+
+At this point:
+
+```text
+Order = Created
+Inventory = Reserved
+Payment = Failed
+```
+
+The previous successful operations may need compensation.
+
+Payment failure can produce:
+
+```text
+PaymentFailed
+```
+
+Inventory Service listens:
+
+```text
+PaymentFailed
+      ↓
+Release Inventory
+```
+
+Inventory then publishes:
+
+```text
+InventoryReleased
+```
+
+Order Service can listen:
+
+```text
+InventoryReleased
+      ↓
+Cancel Order
+```
+
+The flow becomes:
+
+```text
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+PaymentFailed
+      ↓
+InventoryReleased
+      ↓
+OrderCancelled
+```
+
+This is a compensating workflow.
+
+---
+
+# 15. Forward Flow vs Compensation Flow
+
+A Saga usually has two conceptual directions.
+
+### Forward flow
+
+```text
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+PaymentCompleted
+      ↓
+ShipmentCreated
+```
+
+### Compensation flow
+
+If something fails:
+
+```text
+PaymentFailed
+      ↓
+ReleaseInventory
+      ↓
+CancelOrder
+```
+
+Therefore:
+
+```text
+Forward transaction
+        +
+Compensating transactions
+        =
+Saga
+```
+
+---
+
+# 16. Compensation Is Not Database Rollback
+
+This distinction is extremely important.
+
+Suppose payment succeeds:
+
+```text
+Payment = SUCCESS
+```
+
+Later shipping fails.
+
+You cannot necessarily do:
+
+```text
+ROLLBACK Payment DB
+```
+
+because the payment transaction may already be committed.
+
+Instead:
+
+```text
+Payment SUCCESS
+      ↓
+Shipping FAILED
+      ↓
+Refund Payment
+```
+
+The refund is a new business operation.
+
+Therefore:
+
+```text
+Rollback
+    ≠
+Compensation
+```
+
+---
+
+# 17. Example of Full Failure Flow
+
+Suppose:
+
+```text
+1. Order Created
+2. Inventory Reserved
+3. Payment Successful
+4. Shipping Failed
+```
+
+State:
+
+```text
+Order       = CREATED
+Inventory   = RESERVED
+Payment     = SUCCESS
+Shipping    = FAILED
+```
+
+Compensation might be:
+
+```text
+ShippingFailed
+      |
+      +----> Refund Payment
+      |
+      +----> Release Inventory
+      |
+      +----> Cancel Order
+```
+
+Eventually:
+
+```text
+Order       = CANCELLED
+Inventory   = AVAILABLE
+Payment     = REFUNDED
+Shipping    = NOT_CREATED
+```
+
+The system has reached a valid business state again.
+
+---
+
+# 18. Choreography With a Message Broker
+
+A message broker is commonly used for communication.
+
+For example:
+
+```text
+              Message Broker
+             /       |       \
+            /        |        \
+           v         v         v
+      Order       Inventory   Payment
+      Service      Service     Service
+```
+
+Potential technologies include:
+
+```text
+Kafka
+RabbitMQ
+NATS
+AWS SNS/SQS
+```
+
+The broker provides mechanisms for delivering events between services.
+
+---
+
+# 19. Topic-Based Example
+
+With a topic-based broker:
+
+```text
+Order Service
+     |
+     | publish
+     v
+orders.events
+     |
+     +------------------+
+     |                  |
+     v                  v
+Inventory Service   Analytics Service
+```
+
+Inventory may subscribe to:
+
+```text
+OrderCreated
+```
+
+Analytics may also subscribe to:
+
+```text
+OrderCreated
+```
+
+This provides loose coupling between producers and consumers.
+
+---
+
+# 20. Choreography and Loose Coupling
+
+The Order Service doesn't necessarily need to know:
+
+```text
+Who consumes OrderCreated?
+```
+
+It simply publishes:
+
+```text
+OrderCreated
+```
+
+Other services can subscribe.
+
+```text
+Order Service
+      |
+      v
+OrderCreated
+      |
+      +----> Inventory
+      |
+      +----> Analytics
+      |
+      +----> Notification
+```
+
+This can make services more independently deployable.
+
+---
+
+# 21. But Choreography Does Not Mean No Coupling
+
+There is still coupling.
+
+Instead of direct API coupling:
+
+```text
+Order Service
+      |
+      HTTP
+      |
+Inventory Service
+```
+
+we have event/schema coupling:
+
+```text
+OrderCreated
+      |
+      v
+Inventory Service
+```
+
+Inventory Service depends on the event contract.
+
+For example:
+
+```json
+{
+  "orderId": "123",
+  "items": [...]
+}
+```
+
+Changing this event structure can affect consumers.
+
+Therefore:
+
+> Choreography reduces direct runtime coupling, but does not eliminate contracts between services.
+
+---
+
+# 22. Event Contract
+
+An event should have a well-defined schema.
+
+For example:
+
+```json
+{
+  "eventType": "InventoryReserved",
+  "eventVersion": 1,
+  "eventId": "evt_123",
+  "transactionId": "txn_456",
+  "orderId": "order_789",
+  "items": [
+    {
+      "productId": "p1",
+      "quantity": 2
+    }
+  ]
+}
+```
+
+Important fields can include:
+
+```text
+eventType
+eventVersion
+eventId
+transactionId
+entityId
+timestamp
+payload
+```
+
+---
+
+# 23. Event Versioning
+
+Suppose the first version is:
+
+```json
+{
+  "orderId": "123",
+  "amount": 1000
+}
+```
+
+Later we need:
+
+```json
+{
+  "orderId": "123",
+  "amount": 1000,
+  "currency": "INR"
+}
+```
+
+Existing consumers may still expect the old structure.
+
+Therefore, event contracts should be designed with compatibility in mind.
+
+For example:
+
+```text
+OrderCreated v1
+OrderCreated v2
+```
+
+or backward-compatible schema evolution.
+
+---
+
+# 24. The Dual-Write Problem in Choreography
+
+Consider:
+
+```text
+Order Service
+```
+
+It needs to:
+
+```text
+1. Save order
+2. Publish OrderCreated
+```
+
+Naively:
+
+```text
+BEGIN
+ |
+INSERT Order
+ |
+COMMIT
+ |
+Publish Event
+```
+
+Suppose:
+
+```text
+DB commit -> SUCCESS
+Event publish -> FAILURE
+```
+
+Now:
+
+```text
+Order exists
+```
+
+but:
+
+```text
+OrderCreated event doesn't exist
+```
+
+Inventory never receives the event.
+
+This is a major problem.
+
+---
+
+# 25. Why This Matters
+
+The system now has:
+
+```text
+Order DB
+   |
+Order = CREATED
+```
+
+but:
+
+```text
+Inventory Service
+   |
+doesn't know about order
+```
+
+The business state is inconsistent.
+
+Therefore:
+
+> Event-driven distributed transactions require a reliable way to connect local database state with event publication.
+
+A common solution is the **Transactional Outbox Pattern**, which can be covered separately.
+
+---
+
+# 26. Duplicate Events
+
+Message delivery can result in duplicate events.
+
+Suppose:
+
+```text
+OrderCreated
+```
+
+is delivered twice:
+
+```text
+OrderCreated
+     |
+     +----> Inventory
+     |
+     +----> Inventory again
+```
+
+Inventory might attempt to reserve the same inventory twice.
+
+Therefore consumers should generally be **idempotent**.
+
+---
+
+# 27. Idempotent Consumer
+
+Suppose:
+
+```text
+eventId = EVT123
+```
+
+Inventory receives:
+
+```text
+EVT123
+```
+
+It processes it.
+
+Then receives:
+
+```text
+EVT123
+```
+
+again.
+
+The consumer checks:
+
+```text
+Have I already processed EVT123?
+```
+
+If yes:
+
+```text
+Ignore duplicate
+```
+
+Conceptually:
+
+```text
+Event
+ |
+ v
+Check eventId
+ |
+ +---- already processed ---> Ignore
+ |
+ +---- new -----------------> Process
+```
+
+This is an important reliability mechanism for choreography.
+
+---
+
+# 28. Out-of-Order Events
+
+Events may sometimes arrive in an unexpected order.
+
+For example:
+
+```text
+PaymentCompleted
+```
+
+could be processed before another expected event has been handled.
+
+A service must not blindly assume that all events arrive in perfect sequence unless the messaging infrastructure and architecture explicitly guarantee the required ordering.
+
+Possible mechanisms include:
+
+```text
+sequence numbers
+versions
+state validation
+partition ordering
+event timestamps
+```
+
+depending on the system.
+
+---
+
+# 29. Eventual Consistency in Choreography
+
+Saga choreography usually results in **eventual consistency**.
+
+Consider:
+
+```text
+T0:
+Order = CREATED
+
+T1:
+Inventory = RESERVED
+
+T2:
+Payment = PROCESSING
+
+T3:
+Payment = SUCCESS
+
+T4:
+Shipping = CREATED
+```
+
+There may be periods where the system is temporarily inconsistent from the perspective of the complete business workflow.
+
+Eventually:
+
+```text
+Order       = CONFIRMED
+Inventory   = RESERVED
+Payment     = SUCCESS
+Shipping    = CREATED
+```
+
+The system converges toward the desired state.
+
+---
+
+# 30. Intermediate States Are Normal
+
+A Saga often needs explicit intermediate states.
+
+For example:
+
+```text
+Order:
+PENDING
+  ↓
+CONFIRMED
+  ↓
+SHIPPED
+```
+
+Payment:
+
+```text
+PENDING
+  ↓
+SUCCESS
+```
+
+Inventory:
+
+```text
+AVAILABLE
+  ↓
+RESERVED
+```
+
+These states are useful because the complete workflow does not finish instantaneously.
+
+---
+
+# 31. Saga State Machine
+
+A business process can be thought of as a state machine.
+
+Example:
+
+```text
+                    +----------------+
+                    |                |
+                    v                |
+PENDING → INVENTORY_RESERVED → PAYMENT_PENDING
+   |                                  |
+   |                                  v
+   |                             PAYMENT_SUCCESS
+   |                                  |
+   |                                  v
+   |                              CONFIRMED
+   |
+   +------> CANCELLED
+```
+
+Failure transitions are also part of the design.
+
+For example:
+
+```text
+PAYMENT_FAILED
+      ↓
+INVENTORY_RELEASED
+      ↓
+ORDER_CANCELLED
+```
+
+---
+
+# 32. Choreography Failure Scenario
+
+Consider:
+
+```text
+OrderCreated
+     ↓
+InventoryReserved
+     ↓
+PaymentFailed
+```
+
+Payment publishes:
+
+```text
+PaymentFailed
+```
+
+Inventory consumes it:
+
+```text
+Release Inventory
+```
+
+But Inventory crashes before publishing:
+
+```text
+InventoryReleased
+```
+
+Now:
+
+```text
+Inventory = AVAILABLE
+```
+
+but Order Service may still have:
+
+```text
+Order = PENDING
+```
+
+The system needs reliable event processing and recovery.
+
+This demonstrates that:
+
+> Choreography moves coordination into event interactions; it does not eliminate distributed-system failure.
+
+---
+
+# 33. Event Delivery Guarantees
+
+When designing choreography, you need to understand message delivery semantics.
+
+Common concepts include:
+
+```text
+At-most-once
+At-least-once
+Exactly-once
+```
+
+### At-most-once
+
+An event may be lost, but should not be delivered repeatedly.
+
+```text
+0 or 1 delivery
+```
+
+### At-least-once
+
+An event should eventually be delivered, but duplicates may occur.
+
+```text
+1 or more deliveries
+```
+
+### Exactly-once
+
+The system attempts to process the event exactly once.
+
+In distributed systems, true exactly-once end-to-end side effects are difficult.
+
+Therefore, many practical systems rely heavily on:
+
+```text
+At-least-once delivery
++
+Idempotent consumers
+```
+
+---
+
+# 34. Choreography and Retry
+
+Suppose:
+
+```text
+Inventory Service
+```
+
+receives:
+
+```text
+OrderCreated
+```
+
+but its database is temporarily unavailable.
+
+It can retry processing.
+
+```text
+OrderCreated
+     |
+     v
+Inventory
+     |
+   ERROR
+     |
+   RETRY
+     |
+   RETRY
+     |
+ SUCCESS
+```
+
+However, retries can create duplicate side effects.
+
+Therefore:
+
+```text
+Retry
++
+Idempotency
+```
+
+must be designed together.
+
+---
+
+# 35. Poison Messages
+
+A message can repeatedly fail processing.
+
+For example:
+
+```text
+OrderCreated
+     |
+Inventory
+     |
+ERROR
+     |
+Retry
+     |
+ERROR
+     |
+Retry
+     |
+ERROR
+```
+
+Eventually the message may need to be moved to a:
+
+```text
+Dead Letter Queue
+```
+
+or equivalent failure-handling mechanism.
+
+Conceptually:
+
+```text
+Main Queue
+    |
+    v
+Consumer
+    |
+    +---- SUCCESS
+    |
+    +---- FAILURE
+              |
+            Retry
+              |
+            Retry
+              |
+              v
+       Dead Letter Queue
+```
+
+This prevents one problematic message from blocking normal processing indefinitely.
+
+---
+
+# 36. Observability
+
+Choreographed systems can become difficult to debug because the workflow is spread across services.
+
+A single business transaction might produce:
+
+```text
+Order Service
+      ↓
+Kafka
+      ↓
+Inventory Service
+      ↓
+Kafka
+      ↓
+Payment Service
+      ↓
+Kafka
+      ↓
+Shipping Service
+```
+
+Therefore, logs should contain:
+
+```text
+transactionId
+eventId
+eventType
+service
+timestamp
+```
+
+For example:
+
+```text
+transactionId=TXN123
+eventId=EVT456
+eventType=PaymentCompleted
+service=payment-service
+```
+
+This allows engineers to reconstruct the Saga.
+
+---
+
+# 37. Choreography Debugging
+
+Suppose a customer says:
+
+> "My payment succeeded but my order is still pending."
+
+You need to trace:
+
+```text
+TXN123
+   |
+   +--> OrderCreated
+   |
+   +--> InventoryReserved
+   |
+   +--> PaymentCompleted
+   |
+   X
+ShipmentCreated missing
+```
+
+Without correlation identifiers and good event logs, debugging becomes extremely difficult.
+
+---
+
+# 38. Advantages of Saga Choreography
+
+## 1. No central coordinator
+
+Services communicate through events.
+
+```text
+Service
+  ↓
+Event
+  ↓
+Service
+```
+
+---
+
+## 2. Loose runtime coupling
+
+Services don't need synchronous calls to every downstream service.
+
+---
+
+## 3. Natural event-driven architecture
+
+It fits systems already using:
+
+```text
+Kafka
+RabbitMQ
+NATS
+SNS/SQS
+```
+
+---
+
+## 4. Services can react independently
+
+Multiple consumers can respond to the same event.
+
+```text
+OrderCreated
+   |
+   +---- Inventory
+   +---- Analytics
+   +---- Notification
+```
+
+---
+
+## 5. Better fit for asynchronous workflows
+
+Long-running business processes can progress through events rather than holding one long database transaction.
+
+---
+
+# 39. Challenges of Saga Choreography
+
+Choreography also introduces significant complexity.
+
+## 1. Difficult to understand large workflows
+
+A small Saga might be:
+
+```text
+A → B → C
+```
+
+But a large system can become:
+
+```text
+          → B
+         /
+A → Event → C → Event → D
+         \
+          → E
+```
+
+Understanding the complete workflow becomes harder.
+
+---
+
+## 2. Distributed business logic
+
+Business workflow logic is spread across multiple services.
+
+One service knows one part.
+
+Another service knows another part.
+
+---
+
+## 3. Harder debugging
+
+A single business operation can involve many:
+
+```text
+services
+events
+queues
+retries
+databases
+```
+
+---
+
+## 4. Event contract coupling
+
+Changing an event can affect many consumers.
+
+---
+
+## 5. Failure handling is complex
+
+You must handle:
+
+```text
+duplicate events
+lost events
+out-of-order events
+consumer failures
+retries
+dead letters
+compensation
+```
+
+---
+
+## 6. Cyclic dependencies can emerge
+
+Poorly designed event relationships can create:
+
+```text
+A → B
+B → C
+C → A
+```
+
+This makes the workflow difficult to reason about.
+
+---
+
+# 40. Choreography Example — Success
+
+```text
+             Order Service
+                   |
+             OrderCreated
+                   |
+                   v
+          +----------------+
+          | Message Broker |
+          +----------------+
+                   |
+                   v
+          Inventory Service
+                   |
+           InventoryReserved
+                   |
+                   v
+          +----------------+
+          | Message Broker |
+          +----------------+
+                   |
+                   v
+           Payment Service
+                   |
+           PaymentCompleted
+                   |
+                   v
+          +----------------+
+          | Message Broker |
+          +----------------+
+                   |
+                   v
+          Shipping Service
+                   |
+            ShipmentCreated
+```
+
+Final state:
+
+```text
+Order       = CONFIRMED
+Inventory   = RESERVED
+Payment     = SUCCESS
+Shipment    = CREATED
+```
+
+---
+
+# 41. Choreography Example — Failure
+
+```text
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+PaymentFailed
+```
+
+Compensation:
+
+```text
+PaymentFailed
+      ↓
+ReleaseInventory
+      ↓
+InventoryReleased
+      ↓
+CancelOrder
+```
+
+Final state:
+
+```text
+Order       = CANCELLED
+Inventory   = AVAILABLE
+Payment     = FAILED
+```
+
+---
+
+# 42. Choreography Mental Model
+
+The easiest way to remember Saga Choreography:
+
+```text
+Local Transaction
+       ↓
+Publish Event
+       ↓
+Another Service Reacts
+       ↓
+Local Transaction
+       ↓
+Publish Event
+       ↓
+Another Service Reacts
+```
+
+Failure:
+
+```text
+Local Transaction
+       ↓
+Failure Event
+       ↓
+Another Service
+       ↓
+Compensating Transaction
+       ↓
+Another Event
+```
+
+---
+
+# 43. Distributed Transaction vs Saga Choreography
+
+A traditional distributed transaction might try to achieve:
+
+```text
+Global Transaction
+       |
+       +---- DB A
+       +---- DB B
+       +---- DB C
+```
+
+with explicit coordination.
+
+Saga choreography instead uses:
+
+```text
+Local Tx A
+    ↓
+Event
+    ↓
+Local Tx B
+    ↓
+Event
+    ↓
+Local Tx C
+```
+
+The fundamental difference is:
+
+```text
+Distributed Transaction
+→ coordinate a global transaction
+
+Saga Choreography
+→ coordinate a business workflow through local transactions and events
+```
+
+---
+
+# 44. Important Interview Point
+
+If an interviewer asks:
+
+> "What happens if payment fails after inventory has already been reserved?"
+
+A good answer is:
+
+```text
+Payment Service publishes PaymentFailed.
+
+Inventory Service consumes PaymentFailed
+and performs a compensating transaction
+to release the inventory.
+
+It then publishes InventoryReleased.
+
+Order Service can consume that event and
+move the order to CANCELLED.
+```
+
+The important words are:
+
+```text
+Local transaction
+Event
+Compensation
+Idempotency
+Eventual consistency
+```
+
+---
+
+# 45. Important Interview Point: Why Not Rollback Everything?
+
+Because each service owns its own database.
+
+For example:
+
+```text
+Order DB
+Inventory DB
+Payment DB
+```
+
+Once:
+
+```text
+Inventory transaction -> COMMITTED
+```
+
+another service cannot simply execute:
+
+```text
+ROLLBACK Inventory DB
+```
+
+Instead, Inventory must perform a new business operation:
+
+```text
+Release Inventory
+```
+
+This is compensation.
+
+---
+
+# 46. Important Interview Point: What If the Event Is Delivered Twice?
+
+Use an idempotent consumer.
+
+For example:
+
+```text
+eventId = EVT123
+```
+
+Store processed event IDs:
+
+```text
+processed_events
+----------------
+EVT123
+```
+
+When `EVT123` arrives again:
+
+```text
+Already processed?
+       |
+      YES
+       |
+     Ignore
+```
+
+The exact implementation can vary, but duplicate handling must be explicitly designed.
+
+---
+
+# 47. Important Interview Point: What If DB Commit Succeeds but Event Publishing Fails?
+
+This is the **dual-write problem**.
+
+Example:
+
+```text
+DB COMMIT
+   ↓
+SUCCESS
+
+Event Publish
+   ↓
+FAILURE
+```
+
+The local state exists but downstream services don't know about it.
+
+A common solution is the **Transactional Outbox Pattern**:
+
+```text
+BEGIN
+   |
+   +---- Save business data
+   |
+   +---- Save event to Outbox table
+   |
+COMMIT
+```
+
+A separate publisher later publishes the outbox event.
+
+The Outbox Pattern can be covered separately.
+
+---
+
+# 48. Important Interview Point: Does Saga Give ACID?
+
+Saga does not provide traditional global ACID semantics in the same way as a single database transaction.
+
+Instead, Saga generally provides:
+
+```text
+Local ACID transactions
++
+Event-driven coordination
++
+Compensating actions
+```
+
+The overall workflow typically achieves:
+
+```text
+Eventual consistency
+```
+
+rather than one instantaneous globally atomic database commit.
+
+---
+
+# 49. When Choreography Is Useful
+
+Choreography can be useful when:
+
+```text
+- workflows are event-driven
+- services are relatively independent
+- asynchronous processing is acceptable
+- services need to react independently to events
+- the number of participants is manageable
+- eventual consistency is acceptable
+```
+
+The appropriate choice depends on the workflow and consistency requirements.
+
+---
+
+# 50. When Choreography Becomes Difficult
+
+As the number of services and events increases:
+
+```text
+A
+ |
+Event
+ |
+B
+ |
+Event
+ |
+C
+ |
+Event
+ |
+D
+```
+
+can become increasingly difficult to understand.
+
+With many branching events:
+
+```text
+             B
+            /
+A -------- C -------- D
+            \
+             E
+              \
+               F
+```
+
+the complete business workflow may become distributed across many codebases.
+
+This is sometimes called **event-driven spaghetti** when event relationships become excessively complicated.
+
+---
+
+# 51. Complete Mental Model
+
+A Saga choreography can be summarized as:
+
+```text
+                 BUSINESS TRANSACTION
+                         |
+                         v
+                +----------------+
+                | Order Service  |
+                +----------------+
+                         |
+                  Local Transaction
+                         |
+                         v
+                  OrderCreated
+                         |
+                         v
+                +----------------+
+                | Message Broker |
+                +----------------+
+                         |
+                         v
+             +----------------------+
+             | Inventory Service    |
+             +----------------------+
+                         |
+                  Local Transaction
+                         |
+                         v
+                InventoryReserved
+                         |
+                         v
+                +----------------+
+                | Message Broker |
+                +----------------+
+                         |
+                         v
+             +----------------------+
+             | Payment Service      |
+             +----------------------+
+                         |
+                  Local Transaction
+                         |
+                  +------+------+
+                  |             |
+               SUCCESS        FAILURE
+                  |             |
+                  v             v
+        PaymentCompleted    PaymentFailed
+                  |             |
+                  v             v
+             Next Step      Compensation
+```
+
+The key principle is:
+
+> **There is no global database transaction. Each service commits its own local transaction and communicates the result through events. Failures are handled through compensating transactions.**
+
+---
+
+# Key Takeaways
+
+```text
+Saga
+=
+Sequence of local transactions
++
+Events
++
+Compensation
+```
+
+### Choreography
+
+```text
+Service A
+   |
+   | Event
+   v
+Service B
+   |
+   | Event
+   v
+Service C
+```
+
+### Success
+
+```text
+Local Tx
+   ↓
+Event
+   ↓
+Local Tx
+   ↓
+Event
+   ↓
+Success
+```
+
+### Failure
+
+```text
+Local Tx
+   ↓
+Event
+   ↓
+Local Tx
+   ↓
+Failure
+   ↓
+Compensating Transaction
+   ↓
+Event
+```
+
+### Core concepts to remember
+
+```text
+Local Transactions
+Events
+Message Broker
+Eventual Consistency
+Compensating Transactions
+Idempotency
+Transaction ID
+Event ID
+Event Contracts
+Retries
+Duplicate Events
+Out-of-Order Events
+Dead Letter Queue
+Dual-Write Problem
+Transactional Outbox
+Failure Recovery
+Observability
+```
+
+The central idea is:
+
+> **Saga Choreography replaces one large distributed transaction with a sequence of independently committed local transactions connected by events, with compensating transactions used when later steps fail.**
